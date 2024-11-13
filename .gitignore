@@ -2,3 +2,9 @@ target/
 result
 
 *.key
+
+
+##########
+# Devenv #
+##########
+/.direnv/

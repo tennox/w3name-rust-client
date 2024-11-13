@@ -20,7 +20,7 @@
 
           nativeBuildInputs = native-deps;
 
-          cargoBuildOptions = opts: opts ++ ["--no-default-features"];
+          cargoBuildOptions = opts: opts ++ [ "--no-default-features" ];
         };
 
         defaultApp = utils.lib.mkApp {
@@ -28,7 +28,7 @@
         };
 
         devShell = with pkgs; mkShell {
-          buildInputs = [ cargo rustc rustfmt pre-commit rustPackages.clippy ] ++ native-deps;
+          buildInputs = [ cargo rustc rustfmt pre-commit rustPackages.clippy rust-analyzer bacon ] ++ native-deps;
           RUST_SRC_PATH = rustPlatform.rustLibSrc;
         };
       });
