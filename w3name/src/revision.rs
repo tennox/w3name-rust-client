@@ -1,6 +1,8 @@
 use crate::{error::CborError, name::Name};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono_humanize::{Accuracy, HumanTime, Tense};
 use error_stack::{IntoReport, Result, ResultExt};
+use std::fmt::{self, Display};
 
 /// A `Revision` represents a single value for a name record.
 ///
@@ -17,6 +19,7 @@ pub struct Revision {
   value: String,
   sequence: u64,
   validity: DateTime<Utc>,
+  ttl: Duration,
 }
 
 impl Revision {
@@ -27,6 +30,7 @@ impl Revision {
     name: &Name,
     value: S,
     validity: DateTime<Utc>,
+    ttl: Duration,
     sequence: u64,
   ) -> Revision {
     let value = value.as_ref().to_string();
@@ -36,6 +40,7 @@ impl Revision {
       value,
       sequence,
       validity,
+      ttl,
     }
   }
 
@@ -62,6 +67,7 @@ impl Revision {
       value: value.as_ref().to_string(),
       sequence: 0,
       validity: default_validity(),
+      ttl: default_ttl(),
     }
   }
 
@@ -92,8 +98,9 @@ impl Revision {
     name: &Name,
     value: S,
     validity: DateTime<Utc>,
+    ttl: Duration,
   ) -> Revision {
-    Revision::new(name, value, validity, 0)
+    Revision::new(name, value, validity, ttl, 0)
   }
 
   /// Creates a new `Revision` with the given `value` and an incremented sequence number, using the default validity period (1 year).
@@ -136,6 +143,7 @@ impl Revision {
       value: value.as_ref().to_string(),
       sequence,
       validity,
+      ttl: self.ttl,
     }
   }
 
@@ -191,6 +199,13 @@ impl Revision {
       value: self.value.clone(),
       sequence: self.sequence,
       validity: self.validity_string(),
+      ttl: self
+        .ttl
+        .num_nanoseconds()
+        .ok_or_else(|| CborError {})?
+        .try_into()
+        .report()
+        .change_context(CborError)?,
     };
     let bytes = serde_cbor::to_vec(&data)
       .report()
@@ -224,12 +239,17 @@ impl Revision {
     let validity = DateTime::parse_from_rfc3339(&data.validity)
       .report()
       .change_context(CborError)?;
+    let ttl = i64::try_from(data.ttl)
+      .map(Duration::nanoseconds)
+      .report()
+      .change_context(CborError)?;
 
     let rev = Revision {
       name,
       value: data.value,
       sequence: data.sequence,
       validity: validity.into(),
+      ttl,
     };
 
     Ok(rev)
@@ -239,6 +259,11 @@ impl Revision {
 fn default_validity() -> DateTime<Utc> {
   Utc::now().checked_add_signed(Duration::weeks(52)).unwrap()
 }
+fn default_ttl() -> Duration {
+  // 1 hour, according to spec: https://specs.ipfs.tech/ipns/ipns-record/#ttl-uint64
+  // but 31 days is w3name default - so we stick with that for now - details: https://github.com/yusefnapora/w3name-rust-client/issues/33
+  Duration::days(31)
+}
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct RevisionCbor {
@@ -246,6 +271,21 @@ struct RevisionCbor {
   value: String,
   sequence: u64,
   validity: String,
+  ttl: u64,
+}
+
+impl Display for Revision {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(
+      f,
+      "Revision for {}: {{\n  value: {},\n  sequence: {},\n  validity: {},\n  ttl: {}\n}}",
+      self.name.to_string(),
+      self.value,
+      self.sequence,
+      self.validity,
+      HumanTime::from(self.ttl).to_text_en(Accuracy::Precise, Tense::Present),
+    )
+  }
 }
 
 #[cfg(test)]

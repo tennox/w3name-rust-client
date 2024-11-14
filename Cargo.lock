@@ -190,6 +190,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono-humanize"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "799627e6b4d27827a814e837b9d8a504832086081806d45b1afa34dc982b023b"
+dependencies = [
+ "chrono",
+]
+
+[[package]]
 name = "cid"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2261,6 +2270,7 @@ version = "0.1.8"
 dependencies = [
  "base64",
  "chrono",
+ "chrono-humanize",
  "cid",
  "error-stack",
  "governor",
@@ -2283,6 +2293,7 @@ dependencies = [
 name = "w3name-cli"
 version = "0.2.5"
 dependencies = [
+ "base64",
  "clap",
  "error-stack",
  "tokio",

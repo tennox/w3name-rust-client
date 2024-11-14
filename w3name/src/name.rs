@@ -61,6 +61,14 @@ impl Name {
     Ok(Name(pk))
   }
 
+  /// Parses a `Name` from the protobuf encoded bytes
+  pub fn from_bytes(key_bytes: &Vec<u8>) -> Result<Name, NameError> {
+    let pk = PublicKey::from_protobuf_encoding(key_bytes)
+      .report()
+      .change_context(NameError)?;
+    Ok(Name(pk))
+  }
+
   /// Returns a reference to this `Name`'s [PublicKey].
   ///
   /// ## Example

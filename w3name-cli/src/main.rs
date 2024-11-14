@@ -1,9 +1,13 @@
-use std::{error::Error, fmt::Display, fs, path::PathBuf, process::exit};
+use std::{error::Error, fmt::Display, fs, io, path::PathBuf, process::exit};
 
 use clap::{Parser, Subcommand};
-use error_stack::{IntoReport, Result, ResultExt, Report};
+use error_stack::{IntoReport, Report, Result, ResultExt};
 
-use w3name::{Name, Revision, W3NameClient, WritableName, error::{ClientError, APIError}};
+use w3name::{
+  error::{APIError, ClientError},
+  ipns::{deserialize_ipns_entry, revision_from_ipns_entry, validate_ipns_entry},
+  Name, Revision, W3NameClient, WritableName,
+};
 
 #[derive(Parser)]
 #[clap(name = "w3name", version, about, long_about = None)]
@@ -42,6 +46,13 @@ enum Commands {
     #[clap(short, long, value_parser)]
     output: Option<PathBuf>,
   },
+
+  /// Parse a record
+  Parse {
+    /// base64-encoded record
+    #[clap(value_parser)]
+    record: Option<String>,
+  },
 }
 
 #[tokio::main]
@@ -61,6 +72,8 @@ async fn main() {
     Create { output } => {
       create(output)
     }
+
+    Parse { record } => parse_record(record),
   };
 
   if let Err(err_report) = res {
@@ -140,6 +153,24 @@ async fn publish(key_file: &PathBuf, value: &str) -> Result<(), CliError> {
   Ok(())
 }
 
+fn parse_record(input: &Option<String>) -> Result<(), CliError> {
+  let record_encoded = match input {
+    Some(record) => record.clone(),
+    None => io::read_to_string(io::stdin()).map_err(|_| Report::new(CliError))?,
+  };
+  let entry_bytes = base64::decode(record_encoded)
+    .report()
+    .change_context(CliError)?;
+  let entry = deserialize_ipns_entry(&entry_bytes).change_context(CliError)?;
+  // println!("record: {:?}", &entry);
+  let name = Name::from_bytes(&entry.pub_key).change_context(CliError)?;
+  validate_ipns_entry(&entry, name.public_key()).change_context(CliError)?;
+
+  let revision = revision_from_ipns_entry(&entry, &name).change_context(CliError)?;
+  // Ok(revision)
+  println!("{}", revision);
+  Ok(())
+}
 
 /// Returns true if the error report contains an [APIError] with a 404 status
 fn is_404(report: &Report<ClientError>) -> bool {

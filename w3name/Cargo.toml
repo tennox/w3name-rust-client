@@ -26,6 +26,7 @@ serde = "1.0.144"
 serde_cbor = "0.10"
 serde_bytes = "0.11"
 chrono = "0.4.22"
+chrono-humanize = "0.2.3"
 error-stack = "0.1.1"
 
 # we depend indirectly on openssl, but adding an explicit dep with the "vendored" feature

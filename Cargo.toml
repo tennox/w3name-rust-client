@@ -1,5 +1,5 @@
 [workspace]
-
+resolver = "2" # https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions
 members = [
   "w3name",
   "w3name-cli"

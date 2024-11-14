@@ -6,10 +6,10 @@ use crate::{
   ipns_pb::IpnsEntry,
   Name, Revision,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use libp2p_core::identity::{Keypair, PublicKey};
 use prost::Message;
-use std::str::from_utf8;
+use std::{fmt::Display, str::from_utf8};
 
 use error_stack::{report, IntoReport, Result, ResultExt};
 
@@ -76,14 +76,24 @@ pub fn validate_ipns_entry(entry: &IpnsEntry, public_key: &PublicKey) -> Result<
 
 pub fn revision_from_ipns_entry(entry: &IpnsEntry, name: &Name) -> Result<Revision, IpnsError> {
   let value = from_utf8(&entry.value).report().change_context(IpnsError)?;
-  let validity_str = from_utf8(&entry.validity)
-    .report()
-    .change_context(IpnsError)?;
-  let validity = DateTime::parse_from_rfc3339(validity_str)
-    .report()
-    .change_context(IpnsError)?;
-
-  let rev = Revision::new(name, value, validity.into(), entry.sequence);
+  let rev = Revision::new(
+    name,
+    value,
+    from_utf8(&entry.validity)
+      .report()
+      .change_context(IpnsError)
+      .and_then(|encoded| {
+        DateTime::parse_from_rfc3339(encoded)
+          .report()
+          .change_context(IpnsError)
+      })?
+      .into(),
+    i64::try_from(entry.ttl)
+      .map(Duration::nanoseconds)
+      .report()
+      .change_context(IpnsError)?,
+    entry.sequence,
+  );
   Ok(rev)
 }
 

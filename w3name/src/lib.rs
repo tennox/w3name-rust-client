@@ -35,7 +35,7 @@
 mod client;
 pub mod error;
 mod hash;
-mod ipns;
+pub mod ipns;
 mod name;
 mod revision;
 
