@@ -127,6 +127,7 @@ async fn publish(key_file: &PathBuf, value: &str) -> Result<(), CliError> {
     },
   };
 
+  // Publish the revision
   client
     .publish(&writable, &new_revision)
     .await

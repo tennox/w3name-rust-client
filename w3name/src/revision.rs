@@ -119,7 +119,7 @@ impl Revision {
   /// # }
   /// ```
   pub fn increment<S: AsRef<str>>(&self, value: S) -> Revision {
-    Self::increment_with_validity(&self, value, default_validity())
+    Self::increment_with_validity(self, value, default_validity())
   }
 
   /// Creates a new `Revision` with the given `value` and an incremented sequence number, with an explicit validity period.

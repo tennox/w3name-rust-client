@@ -14,7 +14,7 @@ message IpnsEntry {
 	bytes signature = 2;
 
 	// Type of validation being used
-	ValidityType validityType = 3;
+	optional ValidityType validityType = 3;
 
 	// expiration datetime for the record in RFC3339 format
 	bytes validity = 4;

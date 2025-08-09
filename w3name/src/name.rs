@@ -149,14 +149,14 @@ impl Name {
   /// # Ok(())
   /// # }
   /// ```
-  pub fn to_string(&self) -> String {
+  pub fn name_string(&self) -> String {
     self.to_cid().to_string_of_base(Base::Base36Lower).unwrap()
   }
 }
 
 impl Display for Name {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "{}", self.to_string())
+    write!(f, "{}", self.to_cid().to_string_of_base(Base::Base36Lower).unwrap())
   }
 }
 
@@ -193,8 +193,8 @@ impl WritableName {
   /// # }
   /// ```
   pub fn decode(key_bytes: &[u8]) -> Result<WritableName, ProtobufError> {
-    let mut kb = key_bytes.to_vec(); // from_protobuf_encoding takes &mut, so clone instead of requiring the same
-    let kp = Keypair::from_protobuf_encoding(&mut kb)
+    let kb = key_bytes.to_vec(); // from_protobuf_encoding takes &mut, so clone instead of requiring the same
+    let kp = Keypair::from_protobuf_encoding(&kb)
       .report()
       .change_context(ProtobufError)?;
     Ok(WritableName(kp))
@@ -289,16 +289,15 @@ impl WritableName {
   ///
   /// let w = WritableName::new();
   /// let n = w.to_name();
-  ///
-  /// assert_eq!(w.to_string(), n.to_string());
-  pub fn to_string(&self) -> String {
-    self.to_name().to_string()
+  /// ```
+  pub fn name_string(&self) -> String {
+    self.to_name().name_string()
   }
 }
 
 impl Display for WritableName {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "{}", self.to_string())
+    write!(f, "{}", self.to_name())
   }
 }
 

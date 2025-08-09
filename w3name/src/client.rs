@@ -78,7 +78,7 @@ impl W3NameClient {
       .change_context(ClientError)?;
 
     if res.status().is_success() {
-      parse_resolve_response(&name, res).await
+      parse_resolve_response(name, res).await
     } else {
       Err(error_from_response(res).await)
     }
