@@ -1,35 +1,105 @@
 {
+  description = "w3name-rust-client - A tool for creating verifiable names in a web3 world";
+
   inputs = {
-    naersk.url = "github:nix-community/naersk/master";
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    utils.url = "github:numtide/flake-utils";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05"; # or use /nixos-unstable to get latest packages, but maybe less caching
+    systems.url = "github:nix-systems/default"; # (i) allows overriding systems easily, see https://github.com/nix-systems/nix-systems#consumer-usage
+    devenv = {
+      url = "github:cachix/devenv";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay"; # TODO: replace with fenix?
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    crane.url = "github:ipetkov/crane";
   };
 
-  outputs = { self, nixpkgs, utils, naersk }:
-    utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs { inherit system; };
-        naersk-lib = pkgs.callPackage naersk { };
+  outputs = inputs@{ self, systems, flake-parts, nixpkgs, rust-overlay, crane, devenv, ... }: (
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = (import systems);
+      imports = [
+        inputs.devenv.flakeModule
+      ];
 
-        # native deps needed to build openssl and compile protobufs
-        native-deps = with pkgs; [ protobuf perl cmake ];
-      in
-      {
-        defaultPackage = naersk-lib.buildPackage {
-          src = ./.;
+      # perSystem docs: https://flake.parts/module-arguments.html#persystem-module-parameters
+      perSystem = { config, self', inputs', pkgs, system, ... }: (
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [
+              rust-overlay.overlays.default
+            ];
+          };
+          # docs: https://github.com/oxalica/rust-overlay?tab=readme-ov-file#cheat-sheet-common-usage-of-rust-bin
+          rustToolchain = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
+            targets = [
+              "x86_64-unknown-linux-musl"
+              # "wasm-unknown-unknown"
+            ];
+          });
+          craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+          commonArgs = {
+            # https://crane.dev/getting-started.html
+            src = craneLib.cleanCargoSource (craneLib.path ./.);
+            # CARGO_BUILD_TARGET = "wasm-unknown-unknown";
+            # CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+            # CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+            # Add native deps needed to build openssl and compile protobufs
+            nativeBuildInputs = with pkgs; [ protobuf perl cmake pkg-config ];
+            buildInputs = with pkgs; [ openssl ];
+          };
+          my-crate = craneLib.buildPackage (commonArgs // {
+            # Keep original cargo build options for compatibility
+            cargoExtraArgs = "--no-default-features";
+          });
+        in
+        {
+          _module.args.pkgs = pkgs; # apply overlay - https://flake.parts/overlays#consuming-an-overlay
+          # Per-system attributes can be defined here. The self' and inputs'
+          # module parameters provide easy access to attributes of the same
+          # system.
+          checks = {
+            inherit my-crate;
+          };
 
-          nativeBuildInputs = native-deps;
+          packages.default = my-crate;
 
-          cargoBuildOptions = opts: opts ++ [ "--no-default-features" ];
-        };
+          devenv.shells.default = {
+            imports = [
+              ./devenv.nix
+            ];
+            languages.rust.toolchain = rustToolchain;
+            # Useful packages for nix, so I put them here instead of devenv.nix
+            packages = with pkgs; [
+              nixpkgs-fmt
+              nil
+              # Keep original dev tools
+              pre-commit
+              rust-analyzer
+              bacon
+              clippy
+            ];
+          };
+        }
+      );
+      flake = {
+        # The usual flake attributes can be defined here, including system-
+        # agnostic ones like nixosModule and system-enumerating ones, although
+        # those are more easily expressed in perSystem.
 
-        defaultApp = utils.lib.mkApp {
-          drv = self.defaultPackage."${system}";
-        };
+      };
+    }
+  );
 
-        devShell = with pkgs; mkShell {
-          buildInputs = [ cargo rustc rustfmt pre-commit rustPackages.clippy rust-analyzer bacon ] ++ native-deps;
-          RUST_SRC_PATH = rustPlatform.rustLibSrc;
-        };
-      });
+  nixConfig = {
+    extra-substituters = [
+      "https://devenv.cachix.org" # https://devenv.sh/binary-caching/
+      "https://nix-community.cachix.org" # for fenix
+    ];
+    extra-trusted-public-keys = [
+      "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw="
+      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+    ];
+  };
 }
