@@ -17,13 +17,9 @@ pub fn revision_to_ipns_entry(
   revision: &Revision,
   signer: &Keypair,
 ) -> Result<IpnsEntry, IpnsError> {
-  let value = revision.value().as_bytes().to_vec();
-  let validity = revision.validity_string().as_bytes().to_vec();
-
   let duration = revision.validity().signed_duration_since(Utc::now());
   let ttl: u64 = duration.num_nanoseconds().unwrap_or(i64::MAX) as u64;
 
-  let signature = create_v1_signature(&signer, &value, &validity).change_context(IpnsError)?;
   let data = v2_signature_data(
     revision.value(),
     &revision.validity_string(),
@@ -31,18 +27,13 @@ pub fn revision_to_ipns_entry(
     ttl,
   )
   .change_context(IpnsError)?;
-  let signature_v2 = create_v2_signature(&signer, &data).change_context(IpnsError)?;
+  let signature_v2 = create_v2_signature(signer, &data).change_context(IpnsError)?;
+  
+  // V2-only mode: ONLY set signature_v2 and data fields
   let entry = IpnsEntry {
-    value,
-    validity,
-    sequence: revision.sequence(),
-    validity_type: 0,
-
-    pub_key: vec![],
-    signature,
-    ttl,
     signature_v2,
-    data,
+    data: data.clone(),
+    ..Default::default()
   };
 
   Ok(entry)
