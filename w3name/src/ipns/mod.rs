@@ -17,11 +17,13 @@ pub fn revision_to_ipns_entry(
   revision: &Revision,
   signer: &Keypair,
 ) -> Result<IpnsEntry, IpnsError> {
+  
   let _value = revision.value().as_bytes().to_vec();
   let _validity = revision.validity_string().as_bytes().to_vec();
 
-  let duration = revision.validity().signed_duration_since(Utc::now());
-  let ttl: u64 = duration.num_nanoseconds().unwrap_or(i64::MAX) as u64;
+  // TTL should be 5 minutes (300 billion nanoseconds) regardless of validity period
+  // TTL = how long clients should cache, not how long until expiry
+  let ttl: u64 = 5 * 60 * 1_000_000_000; // 5 minutes in nanoseconds
 
   // Don't create V1 signature since we're only using V2
   let data = v2_signature_data(
@@ -33,7 +35,7 @@ pub fn revision_to_ipns_entry(
   .change_context(IpnsError)?;
   let signature_v2 = create_v2_signature(signer, &data).change_context(IpnsError)?;
   
-  // Only set signature_v2 and data fields, omit validity_type
+  // ONLY set signature_v2 and data fields - NO validity_type in protobuf
   let entry = IpnsEntry {
     signature_v2,
     data: data.clone(),
@@ -117,16 +119,17 @@ fn v2_signature_data(
   ttl: u64,
 ) -> Result<Vec<u8>, CborError> {
   let data = SignatureV2Data {
-    Value: value.as_bytes().to_vec(),
-    Validity: validity.as_bytes().to_vec(),
-    ValidityType: 0, // Include ValidityType: 0 in CBOR
-    Sequence: sequence,
     TTL: ttl,
+    Value: value.as_bytes().to_vec(),
+    Sequence: sequence,
+    Validity: validity.as_bytes().to_vec(),
+    ValidityType: 0,
   };
   let encoded = serde_cbor::to_vec(&data)
     .report()
     .change_context(CborError)?;
 
+  
   Ok(encoded)
 }
 
@@ -183,6 +186,7 @@ fn create_v1_signature(
 }
 
 fn create_v2_signature(signer: &Keypair, sig_data: &[u8]) -> Result<Vec<u8>, SigningError> {
+  // Use standard IPNS v2 signature format
   let mut msg = "ipns-signature:".as_bytes().to_vec();
   msg.extend_from_slice(sig_data);
   let sig = signer.sign(&msg).report().change_context(SigningError)?;
@@ -192,16 +196,16 @@ fn create_v2_signature(signer: &Keypair, sig_data: &[u8]) -> Result<Vec<u8>, Sig
 #[allow(non_snake_case)]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SignatureV2Data {
+  #[serde(rename = "TTL")]
+  TTL: u64,
   #[serde(with = "serde_bytes", rename = "Value")]
   Value: Vec<u8>,
+  #[serde(rename = "Sequence")]
+  Sequence: u64,
   #[serde(with = "serde_bytes", rename = "Validity")]
   Validity: Vec<u8>,
   #[serde(rename = "ValidityType")]
   ValidityType: i32,
-  #[serde(rename = "Sequence")]
-  Sequence: u64,
-  #[serde(rename = "TTL")]
-  TTL: u64,
 }
 
 #[cfg(test)]
@@ -249,7 +253,10 @@ mod tests {
   #[test]
   fn server_side_validation_simulation() {
     let name = WritableName::new();
-    let value = "/ipfs/bafkqabcdefg".to_string();
+    // Use the EXACT same IPFS hash as the working JavaScript test
+    let value = "/ipfs/bafkreiem4twkqzsq2aj4shbycd4yvoj2cx72vezicletlhi7dijjciqpui".to_string();
+    
+    // Use standard 1-year validity, but TTL is now fixed to 5 minutes
     let rev = Revision::v0(&name.to_name(), &value);
 
     let entry = revision_to_ipns_entry(&rev, name.keypair()).unwrap();
