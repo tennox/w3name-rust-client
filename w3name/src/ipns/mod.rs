@@ -29,8 +29,15 @@ pub fn revision_to_ipns_entry(
   .change_context(IpnsError)?;
   let signature_v2 = create_v2_signature(signer, &data).change_context(IpnsError)?;
   
-  // V2-only mode: ONLY set signature_v2 and data fields
+  // V2-only mode: set signature_v2 and data fields
+  // Also populate the top-level fields to match what's in data
+  // This is required for validate_v2_data_matches_entry_data to pass
   let entry = IpnsEntry {
+    value: revision.value().as_bytes().to_vec(),
+    validity: revision.validity_string().as_bytes().to_vec(),
+    validity_type: 0, // EOL = 0
+    sequence: revision.sequence(),
+    ttl,
     signature_v2,
     data: data.clone(),
     ..Default::default()
