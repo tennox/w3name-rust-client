@@ -15,6 +15,8 @@
     # (note: this searches on unstable channel, be aware your nixpkgs flake input might be on a release channel)
     cargo-watch
     bacon
+    cmake
+    protobuf
   ];
 
   scripts = {
