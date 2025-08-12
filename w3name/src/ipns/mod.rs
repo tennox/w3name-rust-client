@@ -140,7 +140,7 @@ fn validate_v2_data_matches_entry_data(
     || entry.validity != data.Validity
     || entry.sequence != data.Sequence
     || entry.ttl != data.TTL
-    || entry.validity_type != data.ValidityType
+    || entry.validity_type != data.ValidityType as i32
   {
     Err(report!(InvalidIpnsV2SignatureData))
   } else {
@@ -184,7 +184,7 @@ struct SignatureV2Data {
   Value: Vec<u8>,
   #[serde(with = "serde_bytes")]
   Validity: Vec<u8>,
-  ValidityType: i32,
+  ValidityType: u64,
   Sequence: u64,
   TTL: u64,
 }
