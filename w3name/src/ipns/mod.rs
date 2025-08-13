@@ -17,13 +17,9 @@ pub fn revision_to_ipns_entry(
   revision: &Revision,
   signer: &Keypair,
 ) -> Result<IpnsEntry, IpnsError> {
-  let value = revision.value().as_bytes().to_vec();
-  let validity = revision.validity_string().as_bytes().to_vec();
-
   let duration = revision.validity().signed_duration_since(Utc::now());
   let ttl: u64 = duration.num_nanoseconds().unwrap_or(i64::MAX) as u64;
 
-  let signature = create_v1_signature(&signer, &value, &validity).change_context(IpnsError)?;
   let data = v2_signature_data(
     revision.value(),
     &revision.validity_string(),
@@ -31,18 +27,20 @@ pub fn revision_to_ipns_entry(
     ttl,
   )
   .change_context(IpnsError)?;
-  let signature_v2 = create_v2_signature(&signer, &data).change_context(IpnsError)?;
+  let signature_v2 = create_v2_signature(signer, &data).change_context(IpnsError)?;
+  
+  // V2-only mode: set signature_v2 and data fields
+  // Also populate the top-level fields to match what's in data
+  // This is required for validate_v2_data_matches_entry_data to pass
   let entry = IpnsEntry {
-    value,
-    validity,
+    value: revision.value().as_bytes().to_vec(),
+    validity: revision.validity_string().as_bytes().to_vec(),
+    validity_type: 0, // EOL = 0
     sequence: revision.sequence(),
-    validity_type: 0,
-
-    pub_key: vec![],
-    signature,
     ttl,
     signature_v2,
-    data,
+    data: data.clone(),
+    ..Default::default()
   };
 
   Ok(entry)
@@ -75,26 +73,59 @@ pub fn validate_ipns_entry(entry: &IpnsEntry, public_key: &PublicKey) -> Result<
 }
 
 pub fn revision_from_ipns_entry(entry: &IpnsEntry, name: &Name) -> Result<Revision, IpnsError> {
-  let value = from_utf8(&entry.value).report().change_context(IpnsError)?;
-  let rev = Revision::new(
-    name,
-    value,
-    from_utf8(&entry.validity)
+  // Check if this is an old record with empty V1 fields
+  let is_old_record = entry.value.is_empty() 
+    && entry.validity.is_empty() 
+    && entry.ttl == 0 
+    && entry.sequence == 0;
+    
+  if is_old_record && !entry.data.is_empty() {
+    // Old record: Extract data from V2 CBOR
+    let data: SignatureV2Data = serde_cbor::from_slice(&entry.data[..])
       .report()
-      .change_context(IpnsError)
-      .and_then(|encoded| {
-        DateTime::parse_from_rfc3339(encoded)
-          .report()
-          .change_context(IpnsError)
-      })?
-      .into(),
-    i64::try_from(entry.ttl)
-      .map(Duration::nanoseconds)
+      .change_context(IpnsError)?;
+      
+    let value = from_utf8(&data.Value).report().change_context(IpnsError)?;
+    let validity_str = from_utf8(&data.Validity).report().change_context(IpnsError)?;
+    let validity = DateTime::parse_from_rfc3339(validity_str)
       .report()
-      .change_context(IpnsError)?,
-    entry.sequence,
-  );
-  Ok(rev)
+      .change_context(IpnsError)?;
+      
+    // Note: Using TTL from CBOR data and converting properly
+    let rev = Revision::new(
+      name,
+      value, 
+      validity.into(),
+      i64::try_from(data.TTL)
+        .map(Duration::nanoseconds)
+        .report()
+        .change_context(IpnsError)?,
+      data.Sequence,
+    );
+    Ok(rev)
+  } else {
+    // New record: Use V1 fields as before
+    let value = from_utf8(&entry.value).report().change_context(IpnsError)?;
+    let rev = Revision::new(
+      name,
+      value,
+      from_utf8(&entry.validity)
+        .report()
+        .change_context(IpnsError)
+        .and_then(|encoded| {
+          DateTime::parse_from_rfc3339(encoded)
+            .report()
+            .change_context(IpnsError)
+        })?
+        .into(),
+      i64::try_from(entry.ttl)
+        .map(Duration::nanoseconds)
+        .report()
+        .change_context(IpnsError)?,
+      entry.sequence,
+    );
+    Ok(rev)
+  }
 }
 
 fn v1_signature_data(value_bytes: &[u8], validity_bytes: &[u8]) -> Vec<u8> {
@@ -148,11 +179,25 @@ fn validate_v2_data_matches_entry_data(
   let data: SignatureV2Data = serde_cbor::from_slice(&entry.data[..])
     .report()
     .change_context(InvalidIpnsV2SignatureData)?;
+  
+  // Backward compatibility: Check if this is an old record with empty V1 fields
+  let is_old_record = entry.value.is_empty() 
+    && entry.validity.is_empty() 
+    && entry.ttl == 0 
+    && entry.sequence == 0;
+  
+  if is_old_record {
+    // Old record: V1 fields are empty but V2 data is valid
+    // Skip V1/V2 consistency check - only V2 signature validation matters
+    return Ok(());
+  }
+  
+  // New record: Require V1 fields to match V2 CBOR data
   if entry.value != data.Value
     || entry.validity != data.Validity
     || entry.sequence != data.Sequence
     || entry.ttl != data.TTL
-    || entry.validity_type != data.ValidityType
+    || entry.validity_type != data.ValidityType as i32
   {
     Err(report!(InvalidIpnsV2SignatureData))
   } else {
@@ -196,7 +241,7 @@ struct SignatureV2Data {
   Value: Vec<u8>,
   #[serde(with = "serde_bytes")]
   Validity: Vec<u8>,
-  ValidityType: i32,
+  ValidityType: u64,
   Sequence: u64,
   TTL: u64,
 }
