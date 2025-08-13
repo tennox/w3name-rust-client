@@ -73,16 +73,44 @@ pub fn validate_ipns_entry(entry: &IpnsEntry, public_key: &PublicKey) -> Result<
 }
 
 pub fn revision_from_ipns_entry(entry: &IpnsEntry, name: &Name) -> Result<Revision, IpnsError> {
-  let value = from_utf8(&entry.value).report().change_context(IpnsError)?;
-  let validity_str = from_utf8(&entry.validity)
-    .report()
-    .change_context(IpnsError)?;
-  let validity = DateTime::parse_from_rfc3339(validity_str)
-    .report()
-    .change_context(IpnsError)?;
+  // Check if this is an old record with empty V1 fields
+  let is_old_record = entry.value.is_empty() 
+    && entry.validity.is_empty() 
+    && entry.ttl == 0 
+    && entry.sequence == 0;
+    
+  if is_old_record && !entry.data.is_empty() {
+    // Old record: Extract data from V2 CBOR
+    let data: SignatureV2Data = serde_cbor::from_slice(&entry.data[..])
+      .report()
+      .change_context(IpnsError)?;
+      
+    let value = from_utf8(&data.Value).report().change_context(IpnsError)?;
+    let validity_str = from_utf8(&data.Validity).report().change_context(IpnsError)?;
+    let validity = DateTime::parse_from_rfc3339(validity_str)
+      .report()
+      .change_context(IpnsError)?;
+      
+    let rev = Revision::new(
+      name,
+      value, 
+      validity.into(),
+      data.Sequence,
+    );
+    Ok(rev)
+  } else {
+    // New record: Use V1 fields as before
+    let value = from_utf8(&entry.value).report().change_context(IpnsError)?;
+    let validity_str = from_utf8(&entry.validity)
+      .report()
+      .change_context(IpnsError)?;
+    let validity = DateTime::parse_from_rfc3339(validity_str)
+      .report()
+      .change_context(IpnsError)?;
 
-  let rev = Revision::new(name, value, validity.into(), entry.sequence);
-  Ok(rev)
+    let rev = Revision::new(name, value, validity.into(), entry.sequence);
+    Ok(rev)
+  }
 }
 
 fn v1_signature_data(value_bytes: &[u8], validity_bytes: &[u8]) -> Vec<u8> {
@@ -136,6 +164,20 @@ fn validate_v2_data_matches_entry_data(
   let data: SignatureV2Data = serde_cbor::from_slice(&entry.data[..])
     .report()
     .change_context(InvalidIpnsV2SignatureData)?;
+  
+  // Backward compatibility: Check if this is an old record with empty V1 fields
+  let is_old_record = entry.value.is_empty() 
+    && entry.validity.is_empty() 
+    && entry.ttl == 0 
+    && entry.sequence == 0;
+  
+  if is_old_record {
+    // Old record: V1 fields are empty but V2 data is valid
+    // Skip V1/V2 consistency check - only V2 signature validation matters
+    return Ok(());
+  }
+  
+  // New record: Require V1 fields to match V2 CBOR data
   if entry.value != data.Value
     || entry.validity != data.Validity
     || entry.sequence != data.Sequence
