@@ -257,7 +257,7 @@ mod tests {
     let name = WritableName::new();
     let value = "such value. much wow".to_string();
     let validity = Utc::now().checked_add_signed(Duration::weeks(52)).unwrap();
-    let rev = Revision::v0_with_validity(&name.to_name(), &value, validity);
+    let rev = Revision::v0_with_validity(&name.to_name(), &value, validity, Duration::days(31));
     assert_eq!(rev.sequence(), 0);
     assert_eq!(rev.name(), &name.to_name());
     assert_eq!(rev.value(), &value);
