@@ -51,7 +51,7 @@
           };
           my-crate = craneLib.buildPackage (commonArgs // {
             pname = "w3name";
-            version = "0.1.8";
+            version = "0.2.0";
             # Keep original cargo build options for compatibility
             cargoExtraArgs = "--no-default-features";
             doCheck = false; # Skip tests for now due to TTL precision issue
