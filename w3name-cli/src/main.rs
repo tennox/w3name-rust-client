@@ -13,6 +13,10 @@ use w3name::{
 #[clap(name = "w3name", version, about, long_about = None)]
 /// A tool for creating verifiable names in a web3 world.
 struct Cli {
+  /// Enable verbose debug logging
+  #[clap(long, global = true)]
+  verbose: bool,
+
   #[clap(subcommand)]
   command: Commands,
 }
@@ -58,6 +62,17 @@ enum Commands {
 #[tokio::main]
 async fn main() {
   let cli = Cli::parse();
+
+  // Initialize logging based on verbose flag
+  if cli.verbose {
+    env_logger::Builder::from_default_env()
+      .filter_level(log::LevelFilter::Debug)
+      .init();
+  } else {
+    env_logger::Builder::from_default_env()
+      .filter_level(log::LevelFilter::Warn)
+      .init();
+  }
 
   use Commands::*;
   let res = match &cli.command {

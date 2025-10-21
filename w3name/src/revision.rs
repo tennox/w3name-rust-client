@@ -84,9 +84,10 @@ impl Revision {
   ///
   /// // set the expiration date to two weeks from now:
   /// let expiration_date = Utc::now().checked_add_signed(Duration::weeks(2)).unwrap();
+  /// let ttl = Duration::days(7); // cache for 7 days
   ///
   /// let name = Name::parse("k51qzi5uqu5dka3tmn6ipgsrq1u2bkuowdwlqcw0vibledypt1y9y5i8v8xwvu")?;
-  /// let rev = Revision::v0_with_validity(&name, "an initial value", expiration_date);
+  /// let rev = Revision::v0_with_validity(&name, "an initial value", expiration_date, ttl);
   ///
   /// assert_eq!(&name, rev.name());
   /// assert_eq!(rev.value(), "an initial value");
@@ -170,6 +171,11 @@ impl Revision {
   /// Returns this `Revision`'s validity period as a String, suitable for inclusion in an IPNS record.
   pub fn validity_string(&self) -> String {
     self.validity.to_rfc3339_opts(SecondsFormat::Nanos, true)
+  }
+
+  /// Returns this `Revision`'s TTL (time to live) duration.
+  pub fn ttl(&self) -> Duration {
+    self.ttl
   }
 
   /// Encodes this `Revision` to a binary form, suitable for use with [Revision::decode].

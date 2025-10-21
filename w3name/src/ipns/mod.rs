@@ -6,10 +6,10 @@ use crate::{
   ipns_pb::IpnsEntry,
   Name, Revision,
 };
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration};
 use libp2p_core::identity::{Keypair, PublicKey};
 use prost::Message;
-use std::{fmt::Display, str::from_utf8};
+use std::str::from_utf8;
 
 use error_stack::{report, IntoReport, Result, ResultExt};
 
@@ -17,8 +17,17 @@ pub fn revision_to_ipns_entry(
   revision: &Revision,
   signer: &Keypair,
 ) -> Result<IpnsEntry, IpnsError> {
-  let duration = revision.validity().signed_duration_since(Utc::now());
-  let ttl: u64 = duration.num_nanoseconds().unwrap_or(i64::MAX) as u64;
+  let ttl: u64 = revision
+    .ttl()
+    .num_nanoseconds()
+    .unwrap_or(i64::MAX) as u64;
+
+  log::debug!(
+    "Creating IPNS entry: value={}, sequence={}, ttl={}ns",
+    revision.value(),
+    revision.sequence(),
+    ttl
+  );
 
   let data = v2_signature_data(
     revision.value(),
@@ -28,27 +37,27 @@ pub fn revision_to_ipns_entry(
   )
   .change_context(IpnsError)?;
   let signature_v2 = create_v2_signature(signer, &data).change_context(IpnsError)?;
-  
-  // V2-only mode: set signature_v2 and data fields
-  // Also populate the top-level fields to match what's in data
-  // This is required for validate_v2_data_matches_entry_data to pass
+
+  // V2-only mode: ONLY set signature_v2 and data fields
+  // Leave V1 fields empty - the server expects V2-only records to have empty V1 fields
+  // All actual data is in the CBOR 'data' field
   let entry = IpnsEntry {
-    value: revision.value().as_bytes().to_vec(),
-    validity: revision.validity_string().as_bytes().to_vec(),
-    validity_type: 0, // EOL = 0
-    sequence: revision.sequence(),
-    ttl,
     signature_v2,
-    data: data.clone(),
+    data,
     ..Default::default()
   };
+
+  log::debug!(
+    "Created V2-only IPNS entry: data_len={}, sig_len={}",
+    entry.data.len(),
+    entry.signature_v2.len()
+  );
 
   Ok(entry)
 }
 
 pub fn serialize_ipns_entry(entry: &IpnsEntry) -> Result<Vec<u8>, IpnsError> {
-  let mut buf = Vec::new();
-  buf.reserve(entry.encoded_len());
+  let mut buf = Vec::with_capacity(entry.encoded_len());
   entry.encode(&mut buf).report().change_context(IpnsError)?;
   Ok(buf)
 }
@@ -62,39 +71,44 @@ pub fn deserialize_ipns_entry(entry_bytes: &[u8]) -> Result<IpnsEntry, IpnsError
 
 pub fn validate_ipns_entry(entry: &IpnsEntry, public_key: &PublicKey) -> Result<(), IpnsError> {
   if !entry.signature_v2.is_empty() && !entry.data.is_empty() {
+    log::debug!("Validating V2 IPNS entry");
     validate_v2_signature(public_key, &entry.signature_v2, &entry.data)
       .change_context(IpnsError)?;
     validate_v2_data_matches_entry_data(entry).change_context(IpnsError)?;
+    log::debug!("V2 validation successful");
 
     return Ok(());
   }
 
+  log::debug!("Validating V1 IPNS entry");
   validate_v1_signature(entry, public_key).change_context(IpnsError)
 }
 
 pub fn revision_from_ipns_entry(entry: &IpnsEntry, name: &Name) -> Result<Revision, IpnsError> {
-  // Check if this is an old record with empty V1 fields
-  let is_old_record = entry.value.is_empty() 
-    && entry.validity.is_empty() 
-    && entry.ttl == 0 
-    && entry.sequence == 0;
-    
-  if is_old_record && !entry.data.is_empty() {
-    // Old record: Extract data from V2 CBOR
+  // V2 records have data in CBOR format - prefer this if available
+  if !entry.data.is_empty() {
+    log::debug!("Reading V2 IPNS record from CBOR data");
+    // V2 record: Extract data from CBOR
     let data: SignatureV2Data = serde_cbor::from_slice(&entry.data[..])
       .report()
       .change_context(IpnsError)?;
-      
+
     let value = from_utf8(&data.Value).report().change_context(IpnsError)?;
     let validity_str = from_utf8(&data.Validity).report().change_context(IpnsError)?;
     let validity = DateTime::parse_from_rfc3339(validity_str)
       .report()
       .change_context(IpnsError)?;
-      
-    // Note: Using TTL from CBOR data and converting properly
+
+    log::debug!(
+      "V2 record: value={}, sequence={}, ttl={}ns",
+      value,
+      data.Sequence,
+      data.TTL
+    );
+
     let rev = Revision::new(
       name,
-      value, 
+      value,
       validity.into(),
       i64::try_from(data.TTL)
         .map(Duration::nanoseconds)
@@ -104,7 +118,8 @@ pub fn revision_from_ipns_entry(entry: &IpnsEntry, name: &Name) -> Result<Revisi
     );
     Ok(rev)
   } else {
-    // New record: Use V1 fields as before
+    log::debug!("Reading V1 IPNS record from protobuf fields");
+    // V1 record: Use V1 fields
     let value = from_utf8(&entry.value).report().change_context(IpnsError)?;
     let rev = Revision::new(
       name,
@@ -179,26 +194,29 @@ fn validate_v2_data_matches_entry_data(
   let data: SignatureV2Data = serde_cbor::from_slice(&entry.data[..])
     .report()
     .change_context(InvalidIpnsV2SignatureData)?;
-  
-  // Backward compatibility: Check if this is an old record with empty V1 fields
-  let is_old_record = entry.value.is_empty() 
-    && entry.validity.is_empty() 
-    && entry.ttl == 0 
+
+  // V2-only records have empty V1 fields - this is the expected format
+  let is_v2_only = entry.value.is_empty()
+    && entry.validity.is_empty()
+    && entry.ttl == 0
     && entry.sequence == 0;
-  
-  if is_old_record {
-    // Old record: V1 fields are empty but V2 data is valid
+
+  if is_v2_only {
+    log::debug!("V2-only record detected (empty V1 fields)");
+    // V2-only record: V1 fields are empty, all data is in CBOR
     // Skip V1/V2 consistency check - only V2 signature validation matters
     return Ok(());
   }
-  
-  // New record: Require V1 fields to match V2 CBOR data
+
+  log::debug!("Hybrid V1+V2 record detected, validating field consistency");
+  // Hybrid V1+V2 record (for backward compatibility): Require V1 fields to match V2 CBOR data
   if entry.value != data.Value
     || entry.validity != data.Validity
     || entry.sequence != data.Sequence
     || entry.ttl != data.TTL
     || entry.validity_type != data.ValidityType as i32
   {
+    log::error!("V1/V2 field mismatch detected");
     Err(report!(InvalidIpnsV2SignatureData))
   } else {
     Ok(())
@@ -217,6 +235,7 @@ fn validate_v1_signature(
   }
 }
 
+#[allow(dead_code)]
 fn create_v1_signature(
   signer: &Keypair,
   value_bytes: &[u8],
@@ -250,7 +269,7 @@ struct SignatureV2Data {
 mod tests {
   use super::*;
   use crate::WritableName;
-  use chrono::Duration;
+  use chrono::{Duration, Utc};
 
   #[test]
   fn to_ipns() {
@@ -264,9 +283,14 @@ mod tests {
     assert_eq!(rev.validity(), &validity);
 
     let entry = revision_to_ipns_entry(&rev, name.keypair()).unwrap();
-    assert_eq!(rev.sequence(), entry.sequence);
-    assert_eq!(rev.value().as_bytes(), &entry.value);
-    assert_eq!(rev.validity_string().as_bytes(), &entry.validity);
+    // V2-only records have empty V1 fields - data is in CBOR
+    assert!(entry.value.is_empty());
+    assert!(entry.validity.is_empty());
+    assert_eq!(entry.sequence, 0);
+    assert_eq!(entry.ttl, 0);
+    // V2 data should be populated
+    assert!(!entry.signature_v2.is_empty());
+    assert!(!entry.data.is_empty());
   }
 
   #[test]
