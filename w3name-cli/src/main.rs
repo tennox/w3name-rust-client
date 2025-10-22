@@ -99,9 +99,16 @@ async fn main() {
 
 async fn resolve(name_str: &str) -> Result<(), CliError> {
   let client = W3NameClient::default();
-  let name = Name::parse(name_str).change_context(CliError)?;
+
+  log::debug!("Resolving name: {}", name_str);
+
+  let name = Name::parse(name_str)
+    .change_context(CliError::Resolve)
+    .attach_printable(format!("name: {}", name_str))?;
+
   match client.resolve(&name).await {
     Ok(revision) => {
+      log::debug!("Successfully resolved to: {}", revision.value());
       println!("{}", revision.value());
       Ok(())
     }
@@ -111,7 +118,9 @@ async fn resolve(name_str: &str) -> Result<(), CliError> {
         eprintln!("no record found for key {}", name_str);
         Ok(())
       } else {
-        Err(err_report.change_context(CliError))
+        Err(err_report
+          .change_context(CliError::Resolve)
+          .attach_printable(format!("name: {}", name_str)))
       }
     },
   }
@@ -127,30 +136,95 @@ fn create(output: &Option<PathBuf>) -> Result<(), CliError> {
     .keypair()
     .to_protobuf_encoding()
     .report()
-    .change_context(CliError)?;
+    .change_context(CliError::Create)?;
   fs::write(&output, bytes)
     .report()
-    .change_context(CliError)?;
+    .change_context(CliError::Create)?;
   println!("wrote new keypair to {}", output.display());
   Ok(())
 }
 
+async fn resolve_via_trustless_gateway(name_str: &str) -> Result<Revision, CliError> {
+  log::debug!("Fetching IPNS record from trustless gateway for: {}", name_str);
+
+  let url = format!("https://trustless-gateway.link/ipns/{}", name_str);
+  let client = reqwest::Client::new();
+
+  let response = client
+    .get(&url)
+    .header("Accept", "application/vnd.ipfs.ipns-record")
+    .send()
+    .await
+    .report()
+    .change_context(CliError::Resolve)
+    .attach_printable("fetching from trustless gateway")?;
+
+  if !response.status().is_success() {
+    return Err(Report::new(CliError::Resolve)
+      .attach_printable(format!("trustless gateway returned: {}", response.status())));
+  }
+
+  let record_bytes = response
+    .bytes()
+    .await
+    .report()
+    .change_context(CliError::Resolve)
+    .attach_printable("reading response from trustless gateway")?;
+
+  let entry = deserialize_ipns_entry(&record_bytes).change_context(CliError::Resolve)?;
+  let name = Name::parse(name_str).change_context(CliError::Resolve)?;
+
+  validate_ipns_entry(&entry, name.public_key()).change_context(CliError::Resolve)?;
+
+  let revision = revision_from_ipns_entry(&entry, &name).change_context(CliError::Resolve)?;
+
+  log::debug!("Successfully parsed IPNS record from trustless gateway: sequence={}", revision.sequence());
+
+  Ok(revision)
+}
+
 async fn publish(key_file: &PathBuf, value: &str) -> Result<(), CliError> {
   let client = W3NameClient::default();
-  let key_bytes = fs::read(key_file).report().change_context(CliError)?;
-  let writable = WritableName::decode(&key_bytes).change_context(CliError)?;
+  let key_bytes = fs::read(key_file).report().change_context(CliError::Other)?;
+  let writable = WritableName::decode(&key_bytes).change_context(CliError::Other)?;
+
+  let name_str = writable.to_string();
+
+  log::debug!("Publishing to name: {}", name_str);
+  log::debug!("New value: {}", value);
+  log::debug!("Key file: {}", key_file.display());
 
   // to avoid having to keep old revisions around, we first try to resolve and increment any existing records
   let new_revision = match client.resolve(&writable.to_name()).await {
-    Ok(revision) => revision.increment(value),
+    Ok(revision) => {
+      log::debug!("Found existing revision via w3name, incrementing from sequence {}", revision.sequence());
+      revision.increment(value)
+    },
 
-    // If the API returned a 404, create the initial (v0) Revision.
-    // Bail out for all other errors 
-    Err(err_report) => { 
+    // If w3name resolve fails, try trustless gateway fallback
+    Err(err_report) => {
       if is_404(&err_report) {
+        log::debug!("No existing record found (404), creating initial revision (v0)");
         Revision::v0(&writable.to_name(), value)
       } else {
-        return Err(err_report.change_context(CliError))
+        // Try trustless gateway fallback for other errors (500, network issues, etc)
+        let error_msg = if let Some(api_err) = err_report.downcast_ref::<APIError>() {
+          format!("{} - {}", api_err.status_code, api_err.message)
+        } else {
+          format!("{:?}", err_report)
+        };
+        log::warn!("w3name resolve failed ({}) - trying trustless gateway fallback", error_msg);
+
+        match resolve_via_trustless_gateway(&name_str).await {
+          Ok(revision) => {
+            log::debug!("Found existing revision via trustless gateway, incrementing from sequence {}", revision.sequence());
+            revision.increment(value)
+          },
+          Err(_gateway_err) => {
+            log::debug!("Trustless gateway also failed, creating initial revision (v0)");
+            Revision::v0(&writable.to_name(), value)
+          }
+        }
       }
     },
   };
@@ -158,11 +232,13 @@ async fn publish(key_file: &PathBuf, value: &str) -> Result<(), CliError> {
   client
     .publish(&writable, &new_revision)
     .await
-    .change_context(CliError)?;
+    .change_context(CliError::Publish)
+    .attach_printable(format!("name: {}", name_str))
+    .attach_printable(format!("value: {}", value))?;
 
   println!(
     "published new value for key {}: {}",
-    writable.to_string(),
+    name_str,
     value
   );
   Ok(())
@@ -171,17 +247,17 @@ async fn publish(key_file: &PathBuf, value: &str) -> Result<(), CliError> {
 fn parse_record(input: &Option<String>) -> Result<(), CliError> {
   let record_encoded = match input {
     Some(record) => record.clone(),
-    None => io::read_to_string(io::stdin()).map_err(|_| Report::new(CliError))?,
+    None => io::read_to_string(io::stdin()).map_err(|_| Report::new(CliError::Parse))?,
   };
   let entry_bytes = base64::decode(record_encoded)
     .report()
-    .change_context(CliError)?;
-  let entry = deserialize_ipns_entry(&entry_bytes).change_context(CliError)?;
+    .change_context(CliError::Parse)?;
+  let entry = deserialize_ipns_entry(&entry_bytes).change_context(CliError::Parse)?;
   // println!("record: {:?}", &entry);
-  let name = Name::from_bytes(&entry.pub_key).change_context(CliError)?;
-  validate_ipns_entry(&entry, name.public_key()).change_context(CliError)?;
+  let name = Name::from_bytes(&entry.pub_key).change_context(CliError::Parse)?;
+  validate_ipns_entry(&entry, name.public_key()).change_context(CliError::Parse)?;
 
-  let revision = revision_from_ipns_entry(&entry, &name).change_context(CliError)?;
+  let revision = revision_from_ipns_entry(&entry, &name).change_context(CliError::Parse)?;
   // Ok(revision)
   println!("{}", revision);
   Ok(())
@@ -197,13 +273,35 @@ fn is_404(report: &Report<ClientError>) -> bool {
   }
 }
 
+/// Returns true if the error report contains an [APIError] with a 500 status
+fn is_500(report: &Report<ClientError>) -> bool {
+  let maybe_api_err: Option<&APIError> = report.downcast_ref();
+  if let Some(err) = maybe_api_err {
+    err.status_code == 500
+  } else {
+    false
+  }
+}
 
-#[derive(Debug)]
-struct CliError;
+
+#[derive(Debug, Clone)]
+enum CliError {
+  Resolve,
+  Publish,
+  Create,
+  Parse,
+  Other,
+}
 
 impl Display for CliError {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "something went wrong")
+    match self {
+      CliError::Resolve => write!(f, "failed to resolve name"),
+      CliError::Publish => write!(f, "failed to publish value"),
+      CliError::Create => write!(f, "failed to create new keypair"),
+      CliError::Parse => write!(f, "failed to parse record"),
+      CliError::Other => write!(f, "operation failed"),
+    }
   }
 }
 

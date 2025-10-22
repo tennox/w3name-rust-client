@@ -40,21 +40,33 @@ impl W3NameClient {
     let mut url = self.endpoint.clone();
     url.set_path(format!("name/{}", name.to_string()).as_str());
 
+    log::debug!("HTTP POST {}", url);
+    log::debug!(
+      "Publishing revision with sequence: {}, validity: {}",
+      revision.sequence(),
+      revision.validity()
+    );
+
     let entry = revision_to_ipns_entry(revision, name.keypair()).change_context(ClientError)?;
     let encoded = serialize_ipns_entry(&entry).change_context(ClientError)?;
-    let body = base64::encode(encoded);
+
+    log::debug!("Encoded IPNS entry size: {} bytes", encoded.len());
+
+    let body = base64::encode(&encoded);
 
     self.limiter.until_ready().await;
 
     let res = self
       .http
-      .post(url)
+      .post(url.clone())
       .body(body)
       .send()
       .await
       .report()
       .change_context(HttpError)
       .change_context(ClientError)?;
+
+    log::debug!("Response status: {}", res.status());
 
     if res.status().is_success() {
       Ok(())
@@ -67,6 +79,8 @@ impl W3NameClient {
     let mut url = self.endpoint.clone();
     url.set_path(format!("name/{}", name.to_string()).as_str());
 
+    log::debug!("HTTP GET {}", url);
+
     self.limiter.until_ready().await;
     let res = self
       .http
@@ -76,6 +90,8 @@ impl W3NameClient {
       .report()
       .change_context(HttpError)
       .change_context(ClientError)?;
+
+    log::debug!("Response status: {}", res.status());
 
     if res.status().is_success() {
       parse_resolve_response(&name, res).await
@@ -121,7 +137,11 @@ struct ResolveResponse {
 async fn error_from_response(res: Response) -> Report<ClientError> {
   let status = res.status();
   match res.json::<APIErrorResponse>().await {
-    Ok(json) => report!(APIError{ message: json.message, status_code: status }).change_context(ClientError),
+    Ok(json) => report!(APIError {
+      message: json.message,
+      status_code: status
+    })
+    .change_context(ClientError),
     Err(e) => report!(e)
       .change_context(UnexpectedAPIResponse)
       .change_context(ClientError),
